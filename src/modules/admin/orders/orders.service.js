@@ -36,10 +36,10 @@ const getOrder = async (id) => {
 
   if (error || !order) throw new HttpError("Order not found", 404, "NotFound");
 
-  // Get order items
+  // Get order items with variant info
   const { data: items } = await supabase
     .from("order_items")
-    .select("*, products(id, name, image_url)")
+    .select("*, products(id, name, image_url), product_variants(id, size, color)")
     .eq("order_id", id);
 
   return { ...order, items: items || [] };

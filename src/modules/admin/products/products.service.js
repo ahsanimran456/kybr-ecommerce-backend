@@ -2,14 +2,14 @@ const { supabase } = require("../../../config/supabase");
 const { HttpError } = require("../../../utils/httpError");
 const { parsePagination } = require("../../../utils/pagination");
 const { slugify } = require("../../../utils/slugify");
-const { uploadFile, uploadMultipleFiles, deleteFile } = require("../../../utils/storage");
+const { uploadMultipleFiles, deleteFile } = require("../../../utils/storage");
 
 const listProducts = async (query) => {
   const { from, to, page, limit } = parsePagination(query);
 
   let q = supabase
     .from("products")
-    .select("*, categories(id, name, slug)", { count: "exact" })
+    .select("*, categories(id, name, slug), product_variants(*)", { count: "exact" })
     .order("created_at", { ascending: false })
     .range(from, to);
 
@@ -31,7 +31,7 @@ const listProducts = async (query) => {
 const getProduct = async (id) => {
   const { data, error } = await supabase
     .from("products")
-    .select("*, categories(id, name, slug)")
+    .select("*, categories(id, name, slug), product_variants(*)")
     .eq("id", id)
     .single();
 
@@ -41,7 +41,7 @@ const getProduct = async (id) => {
 };
 
 const createProduct = async (body, files) => {
-  const { name, description, price, compare_at_price, category_id, sku, stock, is_active } = body;
+  const { name, description, details, about, price, compare_at_price, category_id, sku, stock, is_active, variants } = body;
 
   if (!name || price === undefined) {
     throw new HttpError("Name and price are required", 400, "BadRequest");
@@ -54,10 +54,8 @@ const createProduct = async (body, files) => {
   let imageUrls = [];
 
   if (files && files.length > 0) {
-    // First image = main image (image_url)
-    // All images = gallery (images array)
     imageUrls = await uploadMultipleFiles("products", files);
-    image_url = imageUrls[0]; // First image is main
+    image_url = imageUrls[0];
   }
 
   const { data, error } = await supabase
@@ -66,6 +64,8 @@ const createProduct = async (body, files) => {
       name,
       slug,
       description: description || "",
+      details: details || "",
+      about: about || "",
       price: parseFloat(price),
       compare_at_price: compare_at_price ? parseFloat(compare_at_price) : null,
       category_id: category_id || null,
@@ -80,13 +80,38 @@ const createProduct = async (body, files) => {
 
   if (error) throw new HttpError(error.message, 400, "BadRequest");
 
-  return data;
+  // Create variants if provided
+  // variants can come as JSON string from FormData
+  let parsedVariants = [];
+  if (variants) {
+    parsedVariants = typeof variants === "string" ? JSON.parse(variants) : variants;
+  }
+
+  if (parsedVariants.length > 0) {
+    const variantRows = parsedVariants.map((v) => ({
+      product_id: data.id,
+      size: v.size,
+      color: v.color,
+      stock: parseInt(v.stock) || 0,
+      price: v.price ? parseFloat(v.price) : null,
+      sku: v.sku || "",
+      is_active: v.is_active !== undefined ? v.is_active === "true" || v.is_active === true : true,
+    }));
+
+    const { error: variantError } = await supabase
+      .from("product_variants")
+      .insert(variantRows);
+
+    if (variantError) throw new HttpError(variantError.message, 400, "BadRequest");
+  }
+
+  // Return product with variants
+  return getProduct(data.id);
 };
 
 const updateProduct = async (id, body, files) => {
-  const { name, description, price, compare_at_price, category_id, sku, stock, is_active } = body;
+  const { name, description, details, about, price, compare_at_price, category_id, sku, stock, is_active, variants } = body;
 
-  // Check exists
   const { data: existing } = await supabase
     .from("products")
     .select("*")
@@ -101,6 +126,8 @@ const updateProduct = async (id, body, files) => {
     updates.slug = slugify(name) + "-" + Date.now();
   }
   if (description !== undefined) updates.description = description;
+  if (details !== undefined) updates.details = details;
+  if (about !== undefined) updates.about = about;
   if (price !== undefined) updates.price = parseFloat(price);
   if (compare_at_price !== undefined) updates.compare_at_price = compare_at_price ? parseFloat(compare_at_price) : null;
   if (category_id !== undefined) updates.category_id = category_id;
@@ -110,7 +137,6 @@ const updateProduct = async (id, body, files) => {
 
   // Upload new images if provided
   if (files && files.length > 0) {
-    // Delete old images from storage
     if (existing.images && existing.images.length > 0) {
       for (const oldUrl of existing.images) {
         await deleteFile("products", oldUrl);
@@ -124,16 +150,44 @@ const updateProduct = async (id, body, files) => {
     updates.images = imageUrls;
   }
 
-  const { data, error } = await supabase
-    .from("products")
-    .update(updates)
-    .eq("id", id)
-    .select("*, categories(id, name, slug)")
-    .single();
+  if (Object.keys(updates).length > 0) {
+    const { error } = await supabase
+      .from("products")
+      .update(updates)
+      .eq("id", id);
 
-  if (error) throw new HttpError(error.message, 400, "BadRequest");
+    if (error) throw new HttpError(error.message, 400, "BadRequest");
+  }
 
-  return data;
+  // Update variants if provided
+  let parsedVariants = [];
+  if (variants) {
+    parsedVariants = typeof variants === "string" ? JSON.parse(variants) : variants;
+
+    // Delete old variants
+    await supabase.from("product_variants").delete().eq("product_id", id);
+
+    // Insert new variants
+    if (parsedVariants.length > 0) {
+      const variantRows = parsedVariants.map((v) => ({
+        product_id: id,
+        size: v.size,
+        color: v.color,
+        stock: parseInt(v.stock) || 0,
+        price: v.price ? parseFloat(v.price) : null,
+        sku: v.sku || "",
+        is_active: v.is_active !== undefined ? v.is_active === "true" || v.is_active === true : true,
+      }));
+
+      const { error: variantError } = await supabase
+        .from("product_variants")
+        .insert(variantRows);
+
+      if (variantError) throw new HttpError(variantError.message, 400, "BadRequest");
+    }
+  }
+
+  return getProduct(id);
 };
 
 const deleteProduct = async (id) => {
@@ -154,6 +208,7 @@ const deleteProduct = async (id) => {
     await deleteFile("products", existing.image_url);
   }
 
+  // Variants auto-delete honge (ON DELETE CASCADE)
   const { error } = await supabase.from("products").delete().eq("id", id);
 
   if (error) throw new HttpError(error.message, 400, "BadRequest");
