@@ -12,12 +12,14 @@ const get = asyncHandler(async (req, res) => {
 });
 
 const create = asyncHandler(async (req, res) => {
-  const result = await adminCategoriesService.createCategory(req.body);
+  // req.file = multer se aata hai (single image)
+  // req.body = name, description, is_active (FormData se)
+  const result = await adminCategoriesService.createCategory(req.body, req.file);
   res.status(201).json({ success: true, data: result });
 });
 
 const update = asyncHandler(async (req, res) => {
-  const result = await adminCategoriesService.updateCategory(req.params.id, req.body);
+  const result = await adminCategoriesService.updateCategory(req.params.id, req.body, req.file);
   res.json({ success: true, data: result });
 });
 

@@ -2,6 +2,7 @@ const { supabase } = require("../../../config/supabase");
 const { HttpError } = require("../../../utils/httpError");
 const { parsePagination } = require("../../../utils/pagination");
 const { slugify } = require("../../../utils/slugify");
+const { uploadFile, uploadMultipleFiles, deleteFile } = require("../../../utils/storage");
 
 const listProducts = async (query) => {
   const { from, to, page, limit } = parsePagination(query);
@@ -39,8 +40,8 @@ const getProduct = async (id) => {
   return data;
 };
 
-const createProduct = async (body) => {
-  const { name, description, price, compare_at_price, category_id, image_url, images, sku, stock, is_active } = body;
+const createProduct = async (body, files) => {
+  const { name, description, price, compare_at_price, category_id, sku, stock, is_active } = body;
 
   if (!name || price === undefined) {
     throw new HttpError("Name and price are required", 400, "BadRequest");
@@ -48,20 +49,31 @@ const createProduct = async (body) => {
 
   const slug = slugify(name) + "-" + Date.now();
 
+  // Upload images to Supabase Storage
+  let image_url = "";
+  let imageUrls = [];
+
+  if (files && files.length > 0) {
+    // First image = main image (image_url)
+    // All images = gallery (images array)
+    imageUrls = await uploadMultipleFiles("products", files);
+    image_url = imageUrls[0]; // First image is main
+  }
+
   const { data, error } = await supabase
     .from("products")
     .insert({
       name,
       slug,
       description: description || "",
-      price,
-      compare_at_price: compare_at_price || null,
+      price: parseFloat(price),
+      compare_at_price: compare_at_price ? parseFloat(compare_at_price) : null,
       category_id: category_id || null,
-      image_url: image_url || "",
-      images: images || [],
+      image_url,
+      images: imageUrls,
       sku: sku || "",
-      stock: stock || 0,
-      is_active: is_active !== undefined ? is_active : true,
+      stock: parseInt(stock) || 0,
+      is_active: is_active !== undefined ? is_active === "true" || is_active === true : true,
     })
     .select("*, categories(id, name, slug)")
     .single();
@@ -71,13 +83,13 @@ const createProduct = async (body) => {
   return data;
 };
 
-const updateProduct = async (id, body) => {
-  const { name, description, price, compare_at_price, category_id, image_url, images, sku, stock, is_active } = body;
+const updateProduct = async (id, body, files) => {
+  const { name, description, price, compare_at_price, category_id, sku, stock, is_active } = body;
 
   // Check exists
   const { data: existing } = await supabase
     .from("products")
-    .select("id")
+    .select("*")
     .eq("id", id)
     .single();
 
@@ -89,14 +101,28 @@ const updateProduct = async (id, body) => {
     updates.slug = slugify(name) + "-" + Date.now();
   }
   if (description !== undefined) updates.description = description;
-  if (price !== undefined) updates.price = price;
-  if (compare_at_price !== undefined) updates.compare_at_price = compare_at_price;
+  if (price !== undefined) updates.price = parseFloat(price);
+  if (compare_at_price !== undefined) updates.compare_at_price = compare_at_price ? parseFloat(compare_at_price) : null;
   if (category_id !== undefined) updates.category_id = category_id;
-  if (image_url !== undefined) updates.image_url = image_url;
-  if (images !== undefined) updates.images = images;
   if (sku !== undefined) updates.sku = sku;
-  if (stock !== undefined) updates.stock = stock;
-  if (is_active !== undefined) updates.is_active = is_active;
+  if (stock !== undefined) updates.stock = parseInt(stock);
+  if (is_active !== undefined) updates.is_active = is_active === "true" || is_active === true;
+
+  // Upload new images if provided
+  if (files && files.length > 0) {
+    // Delete old images from storage
+    if (existing.images && existing.images.length > 0) {
+      for (const oldUrl of existing.images) {
+        await deleteFile("products", oldUrl);
+      }
+    } else if (existing.image_url) {
+      await deleteFile("products", existing.image_url);
+    }
+
+    const imageUrls = await uploadMultipleFiles("products", files);
+    updates.image_url = imageUrls[0];
+    updates.images = imageUrls;
+  }
 
   const { data, error } = await supabase
     .from("products")
@@ -113,11 +139,20 @@ const updateProduct = async (id, body) => {
 const deleteProduct = async (id) => {
   const { data: existing } = await supabase
     .from("products")
-    .select("id")
+    .select("*")
     .eq("id", id)
     .single();
 
   if (!existing) throw new HttpError("Product not found", 404, "NotFound");
+
+  // Delete images from storage
+  if (existing.images && existing.images.length > 0) {
+    for (const url of existing.images) {
+      await deleteFile("products", url);
+    }
+  } else if (existing.image_url) {
+    await deleteFile("products", existing.image_url);
+  }
 
   const { error } = await supabase.from("products").delete().eq("id", id);
 

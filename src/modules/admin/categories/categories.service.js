@@ -2,6 +2,7 @@ const { supabase } = require("../../../config/supabase");
 const { HttpError } = require("../../../utils/httpError");
 const { parsePagination } = require("../../../utils/pagination");
 const { slugify } = require("../../../utils/slugify");
+const { uploadFile, deleteFile } = require("../../../utils/storage");
 
 const listCategories = async (query) => {
   const { from, to, page, limit } = parsePagination(query);
@@ -37,8 +38,8 @@ const getCategory = async (id) => {
   return data;
 };
 
-const createCategory = async (body) => {
-  const { name, description, image_url, is_active } = body;
+const createCategory = async (body, file) => {
+  const { name, description, is_active } = body;
 
   if (!name) throw new HttpError("Name is required", 400, "BadRequest");
 
@@ -55,14 +56,20 @@ const createCategory = async (body) => {
     throw new HttpError("Category with this name already exists", 400, "BadRequest");
   }
 
+  // Upload image to Supabase Storage
+  let image_url = "";
+  if (file) {
+    image_url = await uploadFile("categories", file);
+  }
+
   const { data, error } = await supabase
     .from("categories")
     .insert({
       name,
       slug,
       description: description || "",
-      image_url: image_url || "",
-      is_active: is_active !== undefined ? is_active : true,
+      image_url,
+      is_active: is_active !== undefined ? is_active === "true" || is_active === true : true,
     })
     .select()
     .single();
@@ -72,12 +79,12 @@ const createCategory = async (body) => {
   return data;
 };
 
-const updateCategory = async (id, body) => {
-  const { name, description, image_url, is_active } = body;
+const updateCategory = async (id, body, file) => {
+  const { name, description, is_active } = body;
 
   const { data: existing } = await supabase
     .from("categories")
-    .select("id")
+    .select("*")
     .eq("id", id)
     .single();
 
@@ -89,8 +96,16 @@ const updateCategory = async (id, body) => {
     updates.slug = slugify(name);
   }
   if (description !== undefined) updates.description = description;
-  if (image_url !== undefined) updates.image_url = image_url;
-  if (is_active !== undefined) updates.is_active = is_active;
+  if (is_active !== undefined) updates.is_active = is_active === "true" || is_active === true;
+
+  // Upload new image if provided
+  if (file) {
+    // Delete old image from storage
+    if (existing.image_url) {
+      await deleteFile("categories", existing.image_url);
+    }
+    updates.image_url = await uploadFile("categories", file);
+  }
 
   const { data, error } = await supabase
     .from("categories")
@@ -107,11 +122,16 @@ const updateCategory = async (id, body) => {
 const deleteCategory = async (id) => {
   const { data: existing } = await supabase
     .from("categories")
-    .select("id")
+    .select("*")
     .eq("id", id)
     .single();
 
   if (!existing) throw new HttpError("Category not found", 404, "NotFound");
+
+  // Delete image from storage
+  if (existing.image_url) {
+    await deleteFile("categories", existing.image_url);
+  }
 
   const { error } = await supabase.from("categories").delete().eq("id", id);
 

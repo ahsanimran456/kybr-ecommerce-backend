@@ -12,12 +12,14 @@ const get = asyncHandler(async (req, res) => {
 });
 
 const create = asyncHandler(async (req, res) => {
-  const result = await adminProductsService.createProduct(req.body);
+  // req.files = multer se aata hai (multiple images)
+  // req.body = name, price, description, etc. (FormData se)
+  const result = await adminProductsService.createProduct(req.body, req.files);
   res.status(201).json({ success: true, data: result });
 });
 
 const update = asyncHandler(async (req, res) => {
-  const result = await adminProductsService.updateProduct(req.params.id, req.body);
+  const result = await adminProductsService.updateProduct(req.params.id, req.body, req.files);
   res.json({ success: true, data: result });
 });
 
